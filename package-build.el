@@ -53,7 +53,17 @@
   :group 'package-build
   :type 'string)
 
+(defcustom package-build-stable nil
+  "Specifies that we should only build stable versions."
+  :group 'package-build
+  :type 'boolean)
+
 (defcustom package-build-archive-dir (expand-file-name "packages/" pb/this-dir)
+  "Directory in which to keep compiled archives."
+  :group 'package-build
+  :type 'string)
+
+(defcustom package-build-archive-stable-dir (expand-file-name "packages-stable/" pb/this-dir)
   "Directory in which to keep compiled archives."
   :group 'package-build
   :type 'string)
@@ -90,6 +100,11 @@ function for access to this function")
                                   (:exclude "*-test.el" "*-tests.el"))
   "Default value for :files attribute in recipes.")
 
+(defun pb/archive-dir ()
+  "Return the archive directory to place built archives in."
+  (if package-build-stable
+      package-build-archive-stable-dir
+    package-build-archive-dir))
 
 (defun pb/slurp-file (file-name)
   "Return the contents of FILE-NAME as a string, or nil if no such file exists."
@@ -140,6 +155,20 @@ function for access to this function")
                 (or bound (point-min)) (point)))
          (times (mapcar 'pb/parse-time (pb/string-match-all regex text 1))))
     (car (nreverse (sort times 'string<)))))
+
+(defun pb/valid-version-string (str)
+  "Returns true if STR is a valid version, otherwise return nil."
+  (ignore-errors (version-to-list str)))
+
+
+(defun pb/find-parse-version-newest (regex &optional bound)
+  "Find the newest version matching REGEX, optionally looking only as far as BOUND."
+  (let* ((text (buffer-substring-no-properties
+                (or bound (point-min)) (point)))
+         (times (cl-remove-if-not 'pb/valid-version-string
+                                  (pb/string-match-all regex text 1))))
+    (car (nreverse (sort times 'version<)))))
+
 
 (defun pb/run-process (dir prog &rest args)
   "In DIR (or `default-directory' if unset) run command PROG with ARGS.
@@ -236,7 +265,8 @@ seconds; the server cuts off after 10 requests in 20 seconds.")
     (let ((files (or (plist-get config :files)
                      (list (format "%s.el" name))))
           (default-directory dir))
-      (car (nreverse (sort (mapcar 'pb/grab-wiki-file files) 'string-lessp))))))
+      (unless package-build-stable
+        (car (nreverse (sort (mapcar 'pb/grab-wiki-file files) 'string-lessp)))))))
 
 (defun pb/darcs-repo (dir)
   "Get the current darcs repo for DIR."
@@ -256,10 +286,11 @@ seconds; the server cuts off after 10 requests in 20 seconds.")
           (delete-directory dir t nil))
         (pb/princ-checkout repo dir)
         (pb/run-process nil "darcs" "get" repo dir)))
-      (apply 'pb/run-process dir "darcs" "changes" "--max-count" "1"
-             (pb/expand-source-file-list dir config))
-      (pb/find-parse-time
-       "\\([a-zA-Z]\\{3\\} [a-zA-Z]\\{3\\} \\( \\|[0-9]\\)[0-9] [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\} [A-Za-z]\\{3\\} [0-9]\\{4\\}\\)"))))
+      (unless package-build-stable
+        (apply 'pb/run-process dir "darcs" "changes" "--max-count" "1"
+               (pb/expand-source-file-list dir config))
+        (pb/find-parse-time
+         "\\([a-zA-Z]\\{3\\} [a-zA-Z]\\{3\\} \\( \\|[0-9]\\)[0-9] [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\} [A-Za-z]\\{3\\} [0-9]\\{4\\}\\)")))))
 
 (defun pb/svn-repo (dir)
   "Get the current svn repo for DIR."
@@ -294,10 +325,11 @@ seconds; the server cuts off after 10 requests in 20 seconds.")
           (delete-directory dir t nil))
         (pb/princ-checkout repo dir)
         (pb/run-process nil "svn" "checkout" repo dir)))
-      (apply 'pb/run-process dir "svn" "info"
-             (pb/expand-source-file-list dir config))
-      (or (pb/find-parse-time-latest "Last Changed Date: \\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)" bound)
-          (error "No valid timestamps found!")))))
+      (unless package-build-stable
+        (apply 'pb/run-process dir "svn" "info"
+               (pb/expand-source-file-list dir config))
+        (or (pb/find-parse-time-latest "Last Changed Date: \\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)" bound)
+            (error "No valid timestamps found!"))))))
 
 (defun pb/cvs-repo (dir)
   "Get the current CVS root and repository for DIR.
@@ -334,11 +366,12 @@ Return a cons cell whose `car' is the root and whose `cdr' is the repository."
                (target-dir (file-name-nondirectory dir)))
           (pb/run-process working-dir "env" "TZ=UTC" "cvs" "-z3" "-d" root "checkout"
                           "-d" target-dir repo))))
-      (apply 'pb/run-process dir "cvs" "log"
-             (pb/expand-source-file-list dir config))
-      (or (pb/find-parse-time-latest "date: \\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\} \\+[0-9]\\{2\\}[0-9]\\{2\\}\\)")
-          (pb/find-parse-time-latest "date: \\([0-9]\\{4\\}/[0-9]\\{2\\}/[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\);")
-          (error "No valid timestamps found!"))
+      (unless package-build-stable
+        (apply 'pb/run-process dir "cvs" "log"
+               (pb/expand-source-file-list dir config))
+        (or (pb/find-parse-time-latest "date: \\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\} \\+[0-9]\\{2\\}[0-9]\\{2\\}\\)")
+            (pb/find-parse-time-latest "date: \\([0-9]\\{4\\}/[0-9]\\{2\\}/[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\);")
+            (error "No valid timestamps found!")))
       )))
 
 (defun pb/git-repo (dir)
@@ -369,12 +402,17 @@ Return a cons cell whose `car' is the root and whose `cdr' is the repository."
           (delete-directory dir t nil))
         (pb/princ-checkout repo dir)
         (pb/run-process nil "git" "clone" repo dir)))
-      (pb/run-process dir "git" "reset" "--hard"
-                      (or commit (concat "origin/" (pb/git-head-branch dir))))
-      (apply 'pb/run-process dir "git" "log" "-n1" "--pretty=format:'\%ci'"
-             (pb/expand-source-file-list dir config))
-      (pb/find-parse-time
-       "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)"))))
+      (if package-build-stable
+          (let ((bound (goto-char (point-max))))
+            (pb/run-process dir "git" "tag")
+            (or (pb/find-parse-version-newest "^\\([^ \t\n]+\\)$" bound)
+                (error "No valid stable versions found for %s" name)))
+        (pb/run-process dir "git" "reset" "--hard"
+                        (or commit (concat "origin/" (pb/git-head-branch dir))))
+        (apply 'pb/run-process dir "git" "log" "-n1" "--pretty=format:'\%ci'"
+               (pb/expand-source-file-list dir config))
+        (pb/find-parse-time
+         "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)")))))
 
 (defun pb/checkout-github (name config dir)
   "Check package NAME with config CONFIG out of github into DIR."
@@ -404,10 +442,11 @@ Return a cons cell whose `car' is the root and whose `cdr' is the repository."
           (delete-directory dir t nil))
         (pb/princ-checkout repo dir)
         (pb/run-process nil "bzr" "branch" repo dir)))
-      (apply 'pb/run-process dir "bzr" "log" "-l1"
-             (pb/expand-source-file-list dir config))
-      (pb/find-parse-time
-       "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)"))))
+      (unless package-build-stable
+        (apply 'pb/run-process dir "bzr" "log" "-l1"
+               (pb/expand-source-file-list dir config))
+        (pb/find-parse-time
+         "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}:[0-9]\\{2\\}\\)")))))
 
 (defun pb/hg-repo (dir)
   "Get the current hg repo for DIR."
@@ -429,10 +468,11 @@ Return a cons cell whose `car' is the root and whose `cdr' is the repository."
           (delete-directory dir t nil))
         (pb/princ-checkout repo dir)
         (pb/run-process nil "hg" "clone" repo dir)))
-      (apply 'pb/run-process dir "hg" "log" "--style" "compact" "-l1"
-             (pb/expand-source-file-list dir config))
-      (pb/find-parse-time
-       "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}\\)"))))
+      (unless package-build-stable
+        (apply 'pb/run-process dir "hg" "log" "--style" "compact" "-l1"
+               (pb/expand-source-file-list dir config))
+        (pb/find-parse-time
+         "\\([0-9]\\{4\\}-[0-9]\\{2\\}-[0-9]\\{2\\} [0-9]\\{2\\}:[0-9]\\{2\\}\\)")))))
 
 (defun pb/dump (data file)
   "Write DATA to FILE as a pretty-printed Lisp sexp."
@@ -506,7 +546,7 @@ The file is written to `package-build-working-dir'."
 (defun pb/readme-file-name (file-name)
   "Name of the readme file for the package FILE-NAME."
   (expand-file-name (concat file-name "-readme.txt")
-                    package-build-archive-dir))
+                    (pb/archive-dir)))
 
 (defun pb/update-or-insert-version (version)
   "Ensure current buffer has a \"Version: VERSION\" header."
@@ -578,7 +618,7 @@ If PKG-INFO is nil, an empty one is created."
   "Dump the list of built packages back to the archive-contents file."
   (pb/dump (cons 1 (package-build-archive-alist))
            (expand-file-name "archive-contents"
-                             package-build-archive-dir)))
+                             (pb/archive-dir))))
 
 (defun pb/add-to-archive-contents (pkg-info type)
   "Add the built archive with info PKG-INFO and TYPE to `package-build-archive-alist'."
@@ -604,7 +644,7 @@ If PKG-INFO is nil, an empty one is created."
          (flavour (aref pkg-info 3)))
     (expand-file-name
      (format "%s-%s.%s" name version (if (eq flavour 'single) "el" "tar"))
-     package-build-archive-dir)))
+     (pb/archive-dir))))
 
 (defun pb/remove-archive (archive-entry)
   "Remove ARCHIVE-ENTRY from archive-contents, and delete associated file.
@@ -790,7 +830,7 @@ FILES is a list of (SOURCE . DEST) relative filepath pairs."
         (let* ((pkg-source (expand-file-name (caar files) pkg-cwd))
                (pkg-target (expand-file-name
                             (concat file-name "-" version ".el")
-                            package-build-archive-dir))
+                            (pb/archive-dir)))
                (pkg-info (pb/merge-package-info
                           (pb/get-package-info pkg-source)
                           file-name
@@ -853,7 +893,7 @@ FILES is a list of (SOURCE . DEST) relative filepath pairs."
           (pb/generate-dir-file files pkg-dir)
 
           (pb/create-tar (expand-file-name (concat file-name "-" version ".tar")
-                                           package-build-archive-dir)
+                                           (pb/archive-dir))
                          pkg-dir)
 
           (let ((default-directory pkg-cwd))
@@ -929,7 +969,7 @@ FILES is a list of (SOURCE . DEST) relative filepath pairs."
     (save-current-buffer
       (switch-to-buffer-other-window
        (find-file-noselect
-        (expand-file-name "archive-contents" package-build-archive-dir) t))
+        (expand-file-name "archive-contents" (pb/archive-dir)) t))
       (revert-buffer t t))
     (when (yes-or-no-p "Install new package? ")
       (package-install-file (pb/find-package-file pkg-name)))))
@@ -996,7 +1036,7 @@ FILES is a list of (SOURCE . DEST) relative filepath pairs."
     (setq pb/archive-alist
           (cdr (pb/read-from-file
                 (expand-file-name "archive-contents"
-                                  package-build-archive-dir)))
+                                  (pb/archive-dir))))
           pb/archive-alist-initialized t))
   pb/archive-alist)
 
